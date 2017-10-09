@@ -1,0 +1,40 @@
+.navbar-default {
+    background-color: #FC3; 
+   /* background-color: #FF3033; */
+   border-color: #FC3;
+}
+.navbar {
+   position: relative;
+   min-height: 30px;
+   margin-bottom: 1px;
+}
+.form-control {
+   height: 20px;
+   padding: 0px 12px; 
+   border: 0px solid #ccc;
+   border-radius: 0px;
+}
+
+.btn-default-rd {
+   background-color: #FC3;
+   border-color: #FC3;
+}
+.navbar-form {
+   margin-top: 2px;
+   margin-bottom: 2px;
+}
+
+.navbar-nav > li > a {
+   padding-top: 3px;
+   padding-bottom: 2px;
+}
+.navbar-default .navbar-nav > li > a {
+   color: #000;
+}
+.nav > li > a {
+   padding: 2px 4px;
+   font-size: 17px;
+}
+.fontsizechanged{
+   font-size: 12px !important;
+}
