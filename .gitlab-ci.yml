@@ -1,0 +1,274 @@
+stages: [build, tests, package, deploy]
+
+variables:
+  ECS_REPOSITORY: 113476202262.dkr.ecr.eu-west-1.amazonaws.com/one/one-front
+  AWS_BUCKET: renault-wiredtools-prod-1-react-styleguide.wired-aws.com
+
+build:
+    stage: build
+    image: ekino/docker-buildbox:node6.9-2017.01.06
+    tags:
+      - renault-one
+      - renault-docker
+    script:
+        - echo "[TIME][build][APT-GET] "$(date)
+        - apt-get update && apt-get install -y make g++ # Needed for a native module
+        - echo "[TIME][build][YARN INSTALL] "$(date)
+        - yarn install
+        - echo "[TIME][build][YARN BUILD] "$(date)
+        - yarn build
+        - echo "[TIME][build][S3-ARCHIVE BUILD] "$(date)
+        - ci-helper s3:archive -region $AWS_DEFAULT_REGION -verbose -include build -include node_modules
+        - echo "[TIME][build][END] "$(date)
+
+e2e-tests:
+    stage: tests
+    image: ekino/docker-buildbox:node6.9-2017.01.06
+    tags:
+      - renault-one
+      - renault-docker
+    script:
+        - apt-get update && apt-get install psmisc
+        - echo "[TIME][e2e-tests][S3-EXTRACT] "$(date)
+        - ci-helper s3:extract -region $AWS_DEFAULT_REGION -job=build -path=./
+        - echo "[TIME][e2e-tests][BROWSERSTACK] "$(date)
+        - ./infra/ci_browserstack.sh tradein
+        - ./infra/ci_browserstack.sh uci
+        - echo "[TIME][e2e-tests][END] "$(date)
+
+styleguide:
+    stage: tests
+    image: ekino/docker-buildbox:node6.9-2017.01.06
+    tags:
+      - renault-one
+      - renault-docker
+    script:
+        - echo "[TIME][styleguide][S3-EXTRACT] "$(date)
+        - ci-helper s3:extract -region $AWS_DEFAULT_REGION -job=build -path=./
+        - echo "[TIME][styleguide][YARN STYLEGUIDE] "$(date)
+        - yarn styleguide:build
+        - echo "[TIME][styleguide][END] "$(date)
+    except:
+        - develop
+
+styleguide-deploy:
+    stage: tests
+    image: ekino/docker-buildbox:node6.9-2017.01.06
+    tags:
+      - renault-one
+      - renault-docker
+    script:
+        - echo "[TIME][styleguide-deploy][S3-EXTRACT] "$(date)
+        - ci-helper s3:extract -region $AWS_DEFAULT_REGION -job=build -path=./
+        - echo "[TIME][styleguide-deploy][YARN STYLEGUIDE] "$(date)
+        - yarn styleguide:build
+        - echo "[TIME][styleguide-deploy][S3-SYNC STYLEGUIDE] "$(date)
+        - aws s3 sync styleguide/ s3://${AWS_BUCKET}/
+        - echo "[TIME][styleguide-deploy][END] "$(date)
+    only:
+        - develop
+
+unit-tests:
+    stage: tests
+    image: ekino/docker-buildbox:node6.9-2017.01.06
+    tags:
+      - renault-one
+      - renault-docker
+    script:
+        - echo "[TIME][unit-tests][S3-EXTRACT] "$(date)
+        - ci-helper s3:extract -region $AWS_DEFAULT_REGION -job=build -path=./
+        - echo "[TIME][unit-tests][YARN TEST] "$(date)
+        - yarn test
+        - echo "[TIME][unit-tests][END] "$(date)
+
+flow-tests:
+    stage: tests
+    image: ekino/docker-buildbox:node6.9-2017.01.06
+    tags:
+      - renault-one
+      - renault-docker
+    script:
+        - echo "[TIME][flow-tests][S3-EXTRACT] "$(date)
+        - ci-helper s3:extract -region $AWS_DEFAULT_REGION -job=build -path=./
+        - echo "[TIME][flow-tests][YARN TEST] "$(date)
+        - yarn flow
+        - echo "[TIME][flow-tests][END] "$(date)
+
+.package: &package
+    stage: package
+    image: ekino/docker-buildbox:dind-aws-2017.01.06
+    dependencies:
+      - build
+    tags:
+      - renault-one
+      - renault-docker
+    script:
+        - ci-helper s3:extract -region $AWS_DEFAULT_REGION -job=build -path=./
+        - sed -i -e "s/VERSION-GITLAB-CI/${CI_COMMIT_REF_SLUG}/g" config/default.json
+        - sed -i -e "s/COMMIT-GITLAB-CI/${CI_COMMIT_SHA}/g" config/default.json
+        - docker build -t image -f infra/images/ssr/Dockerfile .
+        - $(aws ecr get-login)
+        - docker tag image ${ECS_REPOSITORY}:${CI_COMMIT_REF_SLUG}
+        - docker push ${ECS_REPOSITORY}:${CI_COMMIT_REF_SLUG}
+
+package:
+    <<: *package
+    only:
+        - tags
+        - develop
+
+package_rest:
+    <<: *package
+    when: manual
+    except:
+        - tags
+
+.deploy: &deploy
+    stage: deploy
+    image: ekino/docker-buildbox:latest-aws
+    tags:
+        - renault-one
+        - renault-docker
+    script:
+        - ./infra/images/deploy.sh one-front-${SERVICE} ${ENV} ${CLASSIFIER} "${ECS_REPOSITORY}:${CI_COMMIT_REF_SLUG}" "${SSH_PRIVATE_KEY}"
+
+deploy_rest:
+    <<: *deploy
+    variables:
+      SERVICE: admin
+      ENV: dev
+      CLASSIFIER: '1'
+    environment:
+        name: ${ENV}${CLASSIFIER}_${SERVICE}
+        url: https://${SERVICE}-alb-one-${ENV}-${CLASSIFIER}.one-aws.com/healthcheck/front
+    when: manual
+    except:
+        - tags
+
+deploy_dev1_public:
+    <<: *deploy
+    variables:
+      SERVICE: public
+      ENV: dev
+      CLASSIFIER: '1'
+    environment:
+        name: ${ENV}${CLASSIFIER}_${SERVICE}
+        url: https://${SERVICE}-alb-one-${ENV}-${CLASSIFIER}.one-aws.com/healthcheck/front
+    only:
+        - develop
+
+deploy_dev1_admin:
+    <<: *deploy
+    variables:
+      SERVICE: admin
+      ENV: dev
+      CLASSIFIER: '1'
+    environment:
+        name: ${ENV}${CLASSIFIER}_${SERVICE}
+        url: https://${SERVICE}-alb-one-${ENV}-${CLASSIFIER}.one-aws.com/healthcheck/front
+    only:
+        - develop
+
+deploy_dev2_public:
+    <<: *deploy
+    variables:
+      SERVICE: public
+      ENV: dev
+      CLASSIFIER: '2'
+    environment:
+        name: ${ENV}${CLASSIFIER}_${SERVICE}
+        url: https://${SERVICE}-alb-one-${ENV}-${CLASSIFIER}.one-aws.com/healthcheck/front
+    when: manual
+    only:
+        - develop
+
+deploy_dev2_admin:
+    <<: *deploy
+    variables:
+      SERVICE: admin
+      ENV: dev
+      CLASSIFIER: '2'
+    environment:
+        name: ${ENV}${CLASSIFIER}_${SERVICE}
+        url: https://${SERVICE}-alb-one-${ENV}-${CLASSIFIER}.one-aws.com/healthcheck/front
+    when: manual
+    only:
+        - develop
+
+deploy_valid1_public:
+    <<: *deploy
+    variables:
+      SERVICE: public
+      ENV: valid
+      CLASSIFIER: '1'
+    environment:
+        name: ${ENV}${CLASSIFIER}_${SERVICE}
+        url: https://${SERVICE}-alb-one-${ENV}-${CLASSIFIER}.one-aws.com/healthcheck/front
+    when: manual
+    only:
+        - tags
+
+deploy_valid1_admin:
+    <<: *deploy
+    variables:
+      SERVICE: admin
+      ENV: valid
+      CLASSIFIER: '1'
+    environment:
+        name: ${ENV}${CLASSIFIER}_${SERVICE}
+        url: https://${SERVICE}-alb-one-${ENV}-${CLASSIFIER}.one-aws.com/healthcheck/front
+    when: manual
+    only:
+        - tags
+
+deploy_valid2_public:
+    <<: *deploy
+    variables:
+      SERVICE: public
+      ENV: valid
+      CLASSIFIER: '2'
+    environment:
+        name: ${ENV}${CLASSIFIER}_${SERVICE}
+        url: https://${SERVICE}-alb-one-${ENV}-${CLASSIFIER}.one-aws.com/healthcheck/front
+    when: manual
+    only:
+        - tags
+
+deploy_valid2_admin:
+    <<: *deploy
+    variables:
+      SERVICE: admin
+      ENV: valid
+      CLASSIFIER: '2'
+    environment:
+        name: ${ENV}${CLASSIFIER}_${SERVICE}
+        url: https://${SERVICE}-alb-one-${ENV}-${CLASSIFIER}.one-aws.com/healthcheck/front
+    when: manual
+    only:
+        - tags
+
+deploy_prod1_public:
+    <<: *deploy
+    variables:
+      SERVICE: public
+      ENV: prod
+      CLASSIFIER: '1'
+    environment:
+        name: ${ENV}${CLASSIFIER}_${SERVICE}
+        url: https://${SERVICE}-alb-one-${ENV}-${CLASSIFIER}.one-aws.com/healthcheck/front
+    when: manual
+    only:
+        - tags
+
+deploy_prod1_admin:
+    <<: *deploy
+    variables:
+      SERVICE: admin
+      ENV: prod
+      CLASSIFIER: '1'
+    environment:
+        name: ${ENV}${CLASSIFIER}_${SERVICE}
+        url: https://${SERVICE}-alb-one-${ENV}-${CLASSIFIER}.one-aws.com/healthcheck/front
+    when: manual
+    only:
+        - tags
